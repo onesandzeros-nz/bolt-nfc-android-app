@@ -6,6 +6,9 @@
 #import "TapLinxLibrary.h"
 #import "AES128Encryptor.h"
 #import "MiFareCryptoHelper.h"
+#import "CmacAesCipher.h"
+#import "CmacCipher.h"
+#import "TL_Utilities.h"
 
 @implementation NfcManager {
   NSDictionary *nfcTechTypes;
@@ -456,6 +459,32 @@ continueUserActivity:(NSUserActivity *)userActivity
     NSData *result = [NSData dataWithBytes:rotated length:length];
     free(rotated);
     return result;
+  }
+
+  - (NSData *)reverseHexData:(NSData *)data {
+    NSUInteger length = [data length];
+    uint8_t *bytes = (uint8_t *)[data bytes];
+    uint8_t *reversed = malloc(length);
+    for (NSInteger i = 0; i < length; i++) {
+      NSInteger z = length - i;
+      reversed [z] =bytes[i];
+    }
+    NSData *result = [NSData dataWithBytes:reversed length:length];
+    free(reversed);
+    return result;
+  }
+
+  -(NSData *) xorData:(NSData *) data1
+            with:(NSData *)data2{
+    const char *data1Bytes = [data1 bytes];
+    const char *data2Bytes = [data2 bytes];
+    // Mutable data that individual xor'd bytes will be added to
+    NSMutableData *xorData = [[NSMutableData alloc] init];
+    for (int i = 0; i < data1.length; i++){
+        const char xorByte = data1Bytes[i] ^ data2Bytes[i];
+        [xorData appendBytes:&xorByte length:1];
+    }
+    return xorData;
   }
   
   RCT_EXPORT_METHOD(initializeLib)
@@ -939,15 +968,6 @@ continueUserActivity:(NSUserActivity *)userActivity
               //encrypt RndA + RndBRotl using AES 128 encryption
               NSData *RndARndBEnc = [AES128Encryptor encrypt:RndARndBRotl key:keyAes128Default iv:iv];
               
-
-              CCOperation encryptOperation = kCCEncrypt;
-              // Call the doAESCipher function
-              NSData *helperenc = [cryptoHelper doAESCipher:RndARndBRotl
-                                                         key:keyAes128Default
-                                                     context:encryptOperation
-                                                      option:&options
-                                                    initialV:iv];
-              
               
               NSData *secondAuthCommandStart = [self dataFromHexString:@"90AF000020"];
               NSMutableData *secondAuthCommandData = [secondAuthCommandStart mutableCopy];
@@ -974,10 +994,124 @@ continueUserActivity:(NSUserActivity *)userActivity
                   // Log the response
                   NSString *responseString = [responseData description];
                   NSLog(@"secondAuth sendCommand Response: %@", responseString);
+                  TL_Utilities *utility = [TL_Utilities sharedUtility];
+//                  NSData *responseHex = [self dataFromHexString:responseString];
+                  
+//                  NSString *responseString = [utility dataToHexString:responseData];
+                  NSLog(@"secondAuthresponseData: %@", responseData);
+//                  NSLog(@"secondAuthresponseHex: %@", responseHex);
+                  NSData *secondAuthResponseDecrypt = [AES128Encryptor decrypt:responseData key:keyAes128Default iv:iv];
+                  NSLog(@"secondAuthResponseDecrypt: %@", secondAuthResponseDecrypt);
+                  NSData *t1 = [secondAuthResponseDecrypt subdataWithRange:NSMakeRange(0, 4)];
                   NSLog(@"secondAuth sendCommand sw1: %X", sw1);
                   NSLog(@"secondAuth sendCommand sw2: %X", sw2);
+                  NSLog(@"t1: %@", t1);
                   
                   // Process the response here
+
+                  //get file settings
+                  NSData *getFileSettingsCommandStart = [self dataFromHexString:@"90F500000902"];
+                  NSMutableData *getFileSettingsCommandData = [getFileSettingsCommandStart mutableCopy];
+                  
+                  
+                  //SV1 = SV 1 = [0xA5][0x5A][0x00][0x01][0x00][0x80][RndA[15:14] || [ (RndA[13:8] ⊕ RndB[15:10]) ] || [RndB[9:0] || RndA[7:0]
+                  //# == XOR-operator
+                  NSData *sv1Start = [self dataFromHexString:@"A55A00010080"];
+                  NSMutableData *sv1 = [sv1Start mutableCopy];
+
+                  [sv1 appendData:[RndA subdataWithRange:NSMakeRange(0, 2)]];
+
+                  NSData *sv1XorData = [self xorData:[RndA subdataWithRange:NSMakeRange(2, 6)] with:[RndB subdataWithRange:NSMakeRange(0, 6)]];
+                  [sv1 appendData:sv1XorData];
+                  [sv1 appendData:[RndB subdataWithRange:NSMakeRange(6, 10)]];
+                  [sv1 appendData:[RndA subdataWithRange:NSMakeRange(8, 8)]];
+
+                  NSLog(@"sv1: %@", sv1);
+
+                  //SV2 = 5Ah||A5h||00h||01h||00h||80h||RndA[15..14]|| ( RndA[13..8] # RndB[15..10])||RndB[9..0]||RndA[7..0]
+                  //# == XOR-operator
+                  
+
+                  NSData *sv2Start = [self dataFromHexString:@"5AA500010080"];
+                  NSMutableData *sv2 = [sv2Start mutableCopy];
+
+                  [sv2 appendData:[RndA subdataWithRange:NSMakeRange(0, 2)]];
+
+                  NSData *svXorData = [self xorData:[RndA subdataWithRange:NSMakeRange(2, 6)] with:[RndB subdataWithRange:NSMakeRange(0, 6)]];
+                  [sv2 appendData:svXorData];
+                  [sv2 appendData:[RndB subdataWithRange:NSMakeRange(6, 10)]];
+                  [sv2 appendData:[RndA subdataWithRange:NSMakeRange(8, 8)]];
+
+                  NSLog(@"sv2: %@", sv2);
+                  
+                  CmacCipher *cmacKey = [[CmacCipher alloc] initWithCipher: [CmacAesCipher createCipherAesCbcNoPaddingForOperation:kCCEncrypt withKey:keyAes128Default keySize:16 andIv:iv]];
+                  [cmacKey update:sv2];
+                  NSData *sesAuthMacKey = [cmacKey doFinal];
+                  NSString *sesAuthMacKeyStr = [utility dataToHexString:sesAuthMacKey];
+                  NSLog(@"sesAuthMacKeyStr :%@", sesAuthMacKeyStr);
+//                  NSData *sesAuthMacKeyFinal = [self dataFromHexString:sesAuthMacKeyStr];
+//
+//                  NSLog(@"sesAuthMacKey: %@", sesAuthMacKeyFinal);
+
+                  CmacCipher *commandMacCipher = [[CmacCipher alloc] initWithCipher: [CmacAesCipher createCipherAesCbcNoPaddingForOperation:kCCEncrypt withKey:sesAuthMacKey keySize:16 andIv:iv]];
+                  NSLog(@"commandMacCipher :%@", commandMacCipher);
+                  NSData *commandMacHexStart = [self dataFromHexString:@"F50000"];
+                  NSMutableData *commandMacHex = [commandMacHexStart mutableCopy];
+                  [commandMacHex appendData:t1];
+                  [commandMacHex appendData:[self dataFromHexString:@"020000000000000000"]];
+                  [commandMacCipher update:commandMacHex];
+                  NSData *commandMac = [commandMacCipher doFinal];
+                  NSLog(@"commandMacHex: %@", commandMacHex);
+                  NSLog(@"commandMac: %@", commandMac);
+                  
+                  [getFileSettingsCommandData appendData:[commandMac subdataWithRange:NSMakeRange(0, 8)]];
+                  [getFileSettingsCommandData appendData:[self dataFromHexString:@"00"]];
+                  
+                  
+                  //TEST sv2 (test it with the examples provided in the doc)
+                  
+//                  NSData *testRndA = [self dataFromHexString:@"13C5DB8A5930439FC3DEF9A4C675360F"];
+//                  NSData *testRndB = [self dataFromHexString:@"B9E2FC789B64BF237CCCAA20EC7E6E48"];
+//                  NSData *testsv2Start = [self dataFromHexString:@"5AA500010080"];
+//                  NSMutableData *testsv2 = [testsv2Start mutableCopy];
+//
+//                  [testsv2 appendData:[testRndA subdataWithRange:NSMakeRange(0, 2)]];
+//
+//                  NSData *testsvXorData = [self xorData:[testRndA subdataWithRange:NSMakeRange(2, 6)] with:[testRndB subdataWithRange:NSMakeRange(0, 6)]];
+//                  [testsv2 appendData:testsvXorData];
+//                  [testsv2 appendData:[testRndB subdataWithRange:NSMakeRange(6, 10)]];
+//                  [testsv2 appendData:[testRndA subdataWithRange:NSMakeRange(8, 8)]];
+//                  NSLog(@"TEST sv2: %@", testsv2);
+//
+//
+//                  CmacCipher *testCmac = [[CmacCipher alloc] initWithCipher: [CmacAesCipher createCipherAesCbcNoPaddingForOperation:kCCEncrypt withKey:keyAes128Default keySize:16 andIv:iv]];
+//                  [testCmac update:testsv2];
+//                  NSData *testFullMac = [testCmac doFinal];
+//                  NSLog(@"TEST cmac final: %@", testFullMac);
+                  //TEST END
+                  
+                  NSLog(@"getFileSettingsCommandData: %@", getFileSettingsCommandData);
+                  
+                  NFCISO7816APDU *getFileSettingsAPDU = [[NFCISO7816APDU alloc] initWithData:getFileSettingsCommandData];
+                  
+                  NSLog(@"getFileSettingsAPDU: %@", getFileSettingsAPDU);
+
+                  [iso7816Tag sendCommandAPDU:getFileSettingsAPDU completionHandler:^(NSData * _Nonnull responseData, uint8_t sw1, uint8_t sw2, NSError * _Nullable error) {
+                    // Handle the response or error here
+                    if (error) {
+                      // Handle the error here
+                      NSLog(@"get file settings sendCommand Error: %@", [error localizedDescription]);
+                    } else {
+                      // Log the response
+                      NSString *responseString = [responseData description];
+                      NSLog(@"getFileSettings sendCommand Response: %@", responseString);
+                      NSLog(@"getFileSettings sendCommand sw1: %X", sw1);
+                      NSLog(@"getFileSettings sendCommand sw2: %X", sw2);
+
+                      //try
+                    }
+                  }];
+
                 }
                 callback(@[[NSNull null]]);
                 return;
