@@ -9,6 +9,7 @@
 #import "CmacAesCipher.h"
 #import "CmacCipher.h"
 #import "TL_Utilities.h"
+#import "NSMutableData+CmacPadding.h"
 
 @implementation NfcManager {
   NSDictionary *nfcTechTypes;
@@ -460,17 +461,26 @@ continueUserActivity:(NSUserActivity *)userActivity
     free(rotated);
     return result;
   }
-
-  - (NSData *)reverseHexData:(NSData *)data {
-    NSUInteger length = [data length];
-    uint8_t *bytes = (uint8_t *)[data bytes];
-    uint8_t *reversed = malloc(length);
+  
+  - (NSData *) evenNumberedBytes:(NSData *)byteData {
+    NSUInteger length = [byteData length];
+    uint8_t *bytes = (uint8_t *)[byteData bytes];
+    uint8_t *evenBytes = malloc(length);
     for (NSInteger i = 0; i < length; i++) {
-      NSInteger z = length - i;
-      reversed [z] =bytes[i];
+      NSInteger pos = i + 1;
+      if (pos % 2) {
+        //odd
+//        NSInteger z = (pos - 1) / 2;
+//        evenBytes [z] =bytes[i];
+      }
+      else {
+        // even
+        NSInteger z = (pos / 2) - 1;
+        evenBytes [z] =bytes[i];
+      }
     }
-    NSData *result = [NSData dataWithBytes:reversed length:length];
-    free(reversed);
+    NSData *result = [NSData dataWithBytes:evenBytes length:length / 2];
+    free(evenBytes);
     return result;
   }
 
@@ -1002,10 +1012,10 @@ continueUserActivity:(NSUserActivity *)userActivity
 //                  NSLog(@"secondAuthresponseHex: %@", responseHex);
                   NSData *secondAuthResponseDecrypt = [AES128Encryptor decrypt:responseData key:keyAes128Default iv:iv];
                   NSLog(@"secondAuthResponseDecrypt: %@", secondAuthResponseDecrypt);
-                  NSData *t1 = [secondAuthResponseDecrypt subdataWithRange:NSMakeRange(0, 4)];
+                  NSData *ti = [secondAuthResponseDecrypt subdataWithRange:NSMakeRange(0, 4)];
                   NSLog(@"secondAuth sendCommand sw1: %X", sw1);
                   NSLog(@"secondAuth sendCommand sw2: %X", sw2);
-                  NSLog(@"t1: %@", t1);
+                  NSLog(@"ti: %@", ti);
                   
                   // Process the response here
 
@@ -1057,14 +1067,19 @@ continueUserActivity:(NSUserActivity *)userActivity
                   NSLog(@"commandMacCipher :%@", commandMacCipher);
                   NSData *commandMacHexStart = [self dataFromHexString:@"F50000"];
                   NSMutableData *commandMacHex = [commandMacHexStart mutableCopy];
-                  [commandMacHex appendData:t1];
-                  [commandMacHex appendData:[self dataFromHexString:@"020000000000000000"]];
+                  [commandMacHex appendData:ti];
+                  [commandMacHex appendData:[self dataFromHexString:@"02"]];
+                  [commandMacHex appendIso7816d4Padding : 8];
                   [commandMacCipher update:commandMacHex];
                   NSData *commandMac = [commandMacCipher doFinal];
                   NSLog(@"commandMacHex: %@", commandMacHex);
                   NSLog(@"commandMac: %@", commandMac);
+                  NSString *commandMacStr = [utility dataToHexString:commandMac];
+                  NSLog(@"commandMacStr :%@", commandMacStr);
+                  NSData *tuncatedMac = [self evenNumberedBytes:commandMac];
+                  NSLog(@"tuncatedMac :%@", tuncatedMac);
                   
-                  [getFileSettingsCommandData appendData:[commandMac subdataWithRange:NSMakeRange(0, 8)]];
+                  [getFileSettingsCommandData appendData:tuncatedMac];
                   [getFileSettingsCommandData appendData:[self dataFromHexString:@"00"]];
                   
                   
@@ -1088,6 +1103,30 @@ continueUserActivity:(NSUserActivity *)userActivity
 //                  [testCmac update:testsv2];
 //                  NSData *testFullMac = [testCmac doFinal];
 //                  NSLog(@"TEST cmac final: %@", testFullMac);
+                  
+//                  NSData *testSesAuthMacKey = [self dataFromHexString:@"8248134A386E86EB7FAF54A52E536CB6"];
+//
+//                  CmacCipher *testcommandMacCipher = [[CmacCipher alloc] initWithCipher: [CmacAesCipher createCipherAesCbcNoPaddingForOperation:kCCEncrypt withKey:testSesAuthMacKey keySize:16 andIv:iv]];
+//                  NSLog(@"testcommandMacCipher :%@", testcommandMacCipher);
+//                  NSMutableData *testCommandMacHex = [commandMacHexStart mutableCopy];
+//                  [testCommandMacHex appendData:[self dataFromHexString:@"7A21085E"]];
+//                  //0000000000000000
+//                  [testCommandMacHex appendData:[self dataFromHexString:@"02"]];
+//                  [testCommandMacHex appendIso7816d4Padding : 8];
+//                  [testcommandMacCipher update:testCommandMacHex];
+//                  NSData *testCommandMac = [testcommandMacCipher doFinal];
+//                  NSLog(@"test commandMacHex: %@", testCommandMacHex);
+//                  NSLog(@"test commandMac: %@", testCommandMac);
+//                  NSString *testCommandMacStr = [utility dataToHexString:testCommandMac];
+//                  NSLog(@"test commandMacStr :%@", testCommandMacStr);
+//                  NSData *testTuncatedMac = [self evenNumberedBytes:testCommandMac];
+//                  NSLog(@"test tuncatedMac :%@", testTuncatedMac);
+//
+//                  NSMutableData *testGetFileSettingsCommandData = [getFileSettingsCommandStart mutableCopy];
+//                  [testGetFileSettingsCommandData appendData:testTuncatedMac];
+//                  [testGetFileSettingsCommandData appendData:[self dataFromHexString:@"00"]];
+//                  NSLog(@"testGetFileSettingsCommandData :%@", testGetFileSettingsCommandData);
+                  
                   //TEST END
                   
                   NSLog(@"getFileSettingsCommandData: %@", getFileSettingsCommandData);
